@@ -304,6 +304,8 @@ class KMeans(Medoids):
             logger.debug(f'Ignored instances: {cnt} / {len(clusters_distances)} (max_value = {max_value})')
             if (mask == mask_new).all():
                 logger.info(f"Stopped after {it_nb} iterations, no change in cluster assignment")
+                if self.show_progress and tqdm is not None:
+                    it_nbs.close()
                 break
             mask[:, :] = mask_new
             for ki in range(self.k):
@@ -337,6 +339,8 @@ class KMeans(Medoids):
             diff /= difflen
             if diff <= self.thr:
                 print(f"Stopped early after {it_nb} iterations, no change in means")
+                if self.show_progress and tqdm is not None:
+                    it_nbs.close()
                 break
 
         # self.cluster_idx = {medoid: {inst for inst in instances}
