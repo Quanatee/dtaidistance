@@ -131,7 +131,7 @@ class KMeans(Medoids):
         logger.debug('... Done')
         return means
 
-    def kmeansplusplus_centers(self, series, use_c=False):
+    def kmeansplusplus_centers(self, series, use_c=False, idx=None):
         """Better initialization for K-Means.
 
         > Arthur, D., and S. Vassilvitskii. "k-means++: the, advantages of careful seeding.
@@ -168,8 +168,9 @@ class KMeans(Medoids):
             n_samples = self.initialize_sample_size
         dists = np.empty((n_samples, len(series)))
 
-        # First center is chosen randomly
-        idx = np.random.randint(0, len(series))
+        if idx is None:
+            # First center is chosen randomly
+            idx = np.random.randint(0, len(series))
         min_dists = np.power(fn(series, block=((idx, idx + 1), (0, len(series)), False),
                                 compact=True, **self.dists_options), 2)
         indices.append(idx)
@@ -203,7 +204,7 @@ class KMeans(Medoids):
     def fit_fast(self, series):
         return self.fit(series, use_c=True, use_parallel=True)
 
-    def fit(self, series, use_c=False, use_parallel=True):
+    def fit(self, series, use_c=False, use_parallel=True, existing_centers=None):
         """Perform K-means clustering.
 
         :param series: Container with series
@@ -235,7 +236,7 @@ class KMeans(Medoids):
 
         # Initialisations
         if self.initialize_with_kmeanspp:
-            self.means = self.kmeansplusplus_centers(series, use_c=use_c)
+            self.means = self.kmeansplusplus_centers(series, use_c=use_c, idx=existing_centers)
         elif self.initialize_with_kmedoids:
             self.means = self.kmedoids_centers(series, use_c=use_c)
         else:
