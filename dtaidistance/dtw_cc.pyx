@@ -18,6 +18,7 @@ from libc.stdint cimport intptr_t
 from cpython.mem cimport PyMem_Malloc, PyMem_Free
 
 cimport dtaidistancec_dtw
+cimport dtaidistancec_globals
 
 
 cdef extern from "Python.h":
@@ -317,7 +318,12 @@ def warping_paths(double[:, :] dtw, double[:] s1, double[:] s2, **kwargs):
     # Assumes C contiguous
     settings = DTWSettings(**kwargs)
     # Use cython.view.array to avoid numpy dependency
-    wps = cvarray(shape=(len(s1) + 1, dtaidistancec_dtw.dtw_settings_wps_length(len(s1), len(s2), &settings._settings)), itemsize=sizeof(double), format="d")
+    shape = (1, dtaidistancec_dtw.dtw_settings_wps_length(len(s1), len(s2), &settings._settings))
+    try:
+        wps = cvarray(shape=shape, itemsize=sizeof(double), format="d")
+    except MemoryError as exc:
+        print("Cannot allocate memory for warping paths matrix. Trying " + str(shape) + ".")
+        raise exc
     cdef double [:, :] wps_view = wps
     # cdef array.array wps = array.array('d', [0] * dtaidistancec_dtw.dtw_settings_wps_length(len(s1), len(s2), &settings._settings))
     # cdef array.array wps = array.array('d')
@@ -346,6 +352,7 @@ def warping_paths_compact(double[:, :] dtw, double[:] s1, double[:] s2, **kwargs
 
 def warping_path(double[:] s1, double[:] s2, **kwargs):
     # Assumes C contiguous
+    cdef Py_ssize_t path_length;
     settings = DTWSettings(**kwargs)
     cdef Py_ssize_t *i1 = <Py_ssize_t *> PyMem_Malloc((len(s1) + len(s2)) * sizeof(Py_ssize_t))
     if not i1:
@@ -354,12 +361,34 @@ def warping_path(double[:] s1, double[:] s2, **kwargs):
     if not i2:
         raise MemoryError()
     try:
-        dtaidistancec_dtw.warping_path(&s1[0], len(s1), &s2[0], len(s2), i1, i2, &settings._settings)
+        path_length = dtaidistancec_dtw.warping_path(&s1[0], len(s1), &s2[0], len(s2), i1, i2, &settings._settings)
         path = []
-        for i in range(len(s1) + len(s2)):
+        for i in range(path_length):
             path.append((i1[i], i2[i]))
-            if i1[i] == 0 and i2[i] == 0:
-                break
+        path.reverse()
+    finally:
+        PyMem_Free(i1)
+        PyMem_Free(i2)
+    return path
+
+def srand(unsigned int seed):
+    dtaidistancec_dtw.dtw_srand(seed)
+
+def warping_path_prob(double[:] s1, double[:] s2, double avg, **kwargs):
+    # Assumes C contiguous
+    cdef Py_ssize_t path_length;
+    settings = DTWSettings(**kwargs)
+    cdef Py_ssize_t *i1 = <Py_ssize_t *> PyMem_Malloc((len(s1) + len(s2)) * sizeof(Py_ssize_t))
+    if not i1:
+        raise MemoryError()
+    cdef Py_ssize_t *i2 = <Py_ssize_t *> PyMem_Malloc((len(s1) + len(s2)) * sizeof(Py_ssize_t))
+    if not i2:
+        raise MemoryError()
+    try:
+        path_length = dtaidistancec_dtw.warping_path_prob(&s1[0], len(s1), &s2[0], len(s2), i1, i2, avg, &settings._settings)
+        path = []
+        for i in range(path_length):
+            path.append((i1[i], i2[i]))
         path.reverse()
     finally:
         PyMem_Free(i1)
@@ -506,12 +535,12 @@ def distance_matrix_length(DTWBlock block, Py_ssize_t nb_series):
     return length
 
 
-def dba(cur, double[:] c, char[:] mask, **kwargs):
+def dba(cur, double[:] c, unsigned char[:] mask, int nb_prob_samples, **kwargs):
     cdef DTWSeriesMatrix matrix
     cdef DTWSeriesPointers ptrs
     cdef double *c_ptr = &c[0];
     cdef double *matrix_ptr;
-    cdef char *mask_ptr = &mask[0];
+    cdef unsigned char *mask_ptr = &mask[0];
     settings = DTWSettings(**kwargs)
 
     if isinstance(cur, DTWSeriesMatrix) or isinstance(cur, DTWSeriesPointers):
@@ -525,11 +554,11 @@ def dba(cur, double[:] c, char[:] mask, **kwargs):
         ptrs = cur
         dtaidistancec_dtw.dtw_dba_ptrs(
             ptrs._ptrs, ptrs._nb_ptrs, ptrs._lengths,
-            c_ptr, len(c), mask_ptr, &settings._settings)
+            c_ptr, len(c), mask_ptr, nb_prob_samples, &settings._settings)
     elif isinstance(cur, DTWSeriesMatrix):
         matrix = cur
         matrix_ptr = &matrix._data[0,0]
         dtaidistancec_dtw.dtw_dba_matrix(
             matrix_ptr, matrix.nb_rows, matrix.nb_cols,
-            c_ptr, len(c), mask_ptr, &settings._settings)
+            c_ptr, len(c), mask_ptr, nb_prob_samples, &settings._settings)
     return c
