@@ -65,14 +65,48 @@ except ImportError:
     array_max = max
 
 
-def try_import_c():
+def try_import_c(verbose=False):
+    is_complete = True
+    msgs = []
     global dtw_cc
+    global dtw_cc_omp
+    global dtw_cc_numpy
     try:
         from . import dtw_cc
     except ImportError as exc:
-        print('Cannot import C library')
+        print('Cannot import C-based library (dtw_cc)')
+        msgs.append('Cannot import C-based library (dtw_cc)')
         print(exc)
         dtw_cc = None
+        is_complete = False
+    try:
+        from . import dtw_cc_omp
+    except ImportError as exc:
+        print('Cannot import OMP-based library (dtw_cc_omp)')
+        msgs.append('Cannot import OMP-based library (dtw_cc_omp)')
+        print(exc)
+        dtw_cc_omp = None
+        is_complete = False
+    try:
+        from . import dtw_cc_numpy
+    except ImportError as exc:
+        print('Cannot import Numpy-based library (dtw_cc_numpy)')
+        msgs.append('Cannot import Numpy-based library (dtw_cc_numpy)')
+        print(exc)
+        dtw_cc_numpy = None
+        is_complete = False
+    if not is_complete:
+        print('Not all libraries are available in your installation. '
+              'Share the following information when submitting a bug report:')
+        for msg in msgs:
+            print(f'- {msg}')
+        print('- System information:')
+        import sys
+        print(f'  {sys.implementation}')
+        print('Additionally, you can rerun the compilation from source or pip install in verbose mode:\n'
+              'pip install -vvv --upgrade --force-reinstall --no-deps --no-binary :all: dtaidistance')
+    elif verbose:
+        print('All ok ...')
 
 
 inf = float("inf")
@@ -85,8 +119,9 @@ def _check_library(include_omp=False, raise_exception=True):
         logger.error(msg)
         if raise_exception:
             raise Exception(msg)
-    if include_omp and dtw_cc_omp is None:
+    if include_omp and (dtw_cc_omp is None or not dtw_cc_omp.is_openmp_supported()):
         msg = "The compiled dtaidistance C-OMP library is not available.\n" + \
+              "Use Python's multiprocessing library for parellelization (use_mp=True).\n" + \
               "See the documentation for alternative installation options."
         logger.error(msg)
         if raise_exception:
@@ -254,7 +289,8 @@ def distance(s1, s2,
 
 def distance_fast(s1, s2, window=None, max_dist=None,
                   max_step=None, max_length_diff=None, penalty=None, psi=None, use_pruning=False, only_ub=False):
-    """Fast C version of :meth:`distance`.
+    """Same as :meth:`distance` but with different defaults to chose the fast C-based version of
+    the implementation (use_c = True).
 
     Note: the series are expected to be arrays of the type ``double``.
     Thus ``numpy.array([1,2,3], dtype=numpy.double)`` or
@@ -290,7 +326,7 @@ def warping_paths(s1, s2, window=None, max_dist=None,
     """
     Dynamic Time Warping.
 
-    The full matrix of all warping paths is built.
+    The full matrix of all warping paths (or accumulated cost matrix) is built.
 
     :param s1: First sequence
     :param s2: Second sequence
@@ -464,18 +500,16 @@ def distance_matrix(s, max_dist=None, use_pruning=False, max_length_diff=None,
     :param compact: Return the distance matrix as an array representing the upper triangular matrix.
     :param parallel: Use parallel operations
     :param use_c: Use c compiled Python functions
-    :param use_mp: Use Multiprocessing for parallel operations (not OpenMP)
+    :param use_mp: Force use Multiprocessing for parallel operations (not OpenMP)
     :param show_progress: Show progress using the tqdm library. This is only supported for
         the pure Python version (thus not the C-based implementations).
     :returns: The distance matrix or the condensed distance matrix if the compact argument is true
     """
     # Check whether multiprocessing is available
     if use_c:
-        _check_library(raise_exception=True)
-    if use_c and parallel:
-        if dtw_cc_omp is None:
-            logger.warning('OMP extension not loaded, using multiprocessing')
-    if parallel and (use_mp or not use_c or dtw_cc_omp is None):
+        requires_omp = parallel and not use_mp
+        _check_library(raise_exception=True, include_omp=requires_omp)
+    if parallel and (use_mp or not use_c):
         try:
             import multiprocessing as mp
             logger.info('Using multiprocessing')
@@ -666,13 +700,28 @@ def _distance_matrix_length(block, nb_series):
 
 def distance_matrix_fast(s, max_dist=None, max_length_diff=None,
                          window=None, max_step=None, penalty=None, psi=None,
-                         block=None, compact=False, parallel=True, only_triu=False):
-    """Fast C version of :meth:`distance_matrix`."""
-    _check_library(raise_exception=True, include_omp=parallel)
+                         block=None, compact=False, parallel=True, use_mp=False,
+                         only_triu=False):
+    """Same as :meth:`distance_matrix` but with different defaults to choose the
+    fast parallized C version (use_c = True and parallel = True).
+
+    This method uses the C-compiled version of the DTW algorithm and uses parallelization.
+    By default this is the OMP C parallelization. If the OMP functionality is not available
+    the parallelization is changed to use Python's multiprocessing library.
+    """
+    _check_library(raise_exception=True, include_omp=False)
+    if not use_mp and parallel:
+        try:
+            _check_library(raise_exception=True, include_omp=True)
+        except Exception:
+            logger.warning('The compiled dtaidistance C-OMP library is not available.\n'
+                           'Using the Python multiprocessing library instead (use_mp=True).\n'
+                           'See the documentation for alternative installation options.\n')
+            use_mp = True
     return distance_matrix(s, max_dist=max_dist, max_length_diff=max_length_diff,
                            window=window, max_step=max_step, penalty=penalty, psi=psi,
                            block=block, compact=compact, parallel=parallel,
-                           use_c=True, show_progress=False, only_triu=only_triu)
+                           use_c=True, use_mp=use_mp, show_progress=False, only_triu=only_triu)
 
 
 def warping_path(from_s, to_s, **kwargs):
@@ -686,6 +735,13 @@ def warping_path_fast(from_s, to_s, **kwargs):
     """Compute warping path between two sequences."""
     from_s, to_s, settings_kwargs = warping_path_args_to_c(from_s, to_s, **kwargs)
     path = dtw_cc.warping_path(from_s, to_s, **settings_kwargs)
+    return path
+
+
+def warping_path_prob_fast(from_s, to_s, avg, **kwargs):
+    """Compute warping path between two sequences."""
+    from_s, to_s, settings_kwargs = warping_path_args_to_c(from_s, to_s, **kwargs)
+    path = dtw_cc.warping_path_prob(from_s, to_s, avg, **settings_kwargs)
     return path
 
 
