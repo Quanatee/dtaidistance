@@ -119,18 +119,18 @@ class KMeans(Medoids):
     def kmedoids_centers(self, series, use_c=False):
         logger.debug('Start K-medoid initialization ... ')
         if self.initialize_sample_size is None:
-            sample_size = min(self.k * 20, len(self.series))
+            sample_size = min(self.k * 20, len(series))
         else:
-            sample_size = min(self.initialize_sample_size, len(self.series))
-        indices = np.random.choice(range(0, len(self.series)), sample_size, replace=False)
-        sample = self.series[indices, :].copy()
+            sample_size = min(self.initialize_sample_size, len(series))
+        indices = np.random.choice(range(0, len(series)), sample_size, replace=False)
+        sample = series[indices, :].copy()
         if use_c:
             fn_dm = distance_matrix_fast
         else:
             fn_dm = distance_matrix
         model = KMedoids(fn_dm, {**self.dists_options, **{'compact': False}}, k=self.k)
         cluster_idx = model.fit(sample)
-        means = [self.series[idx] for idx in cluster_idx.keys()]
+        means = [series[idx] for idx in cluster_idx.keys()]
         logger.debug('... Done')
         return means
 
@@ -209,7 +209,7 @@ class KMeans(Medoids):
     def fit_fast(self, series):
         return self.fit(series, use_c=True, use_parallel=True)
 
-    def fit(self, series, use_c=False, use_parallel=True):
+    def fit(self, series, use_c=False, use_parallel=True, custom_means=None):
         """Perform K-means clustering.
 
         :param series: Container with series
@@ -221,9 +221,9 @@ class KMeans(Medoids):
         """
         if np is None:
             raise NumpyException("Numpy is required for the KMeans.fit method.")
-        self.series = SeriesContainer.wrap(series, support_ndim=False)
-        mask = np.full((self.k, len(self.series)), False, dtype=bool)
-        mask_new = np.full((self.k, len(self.series)), False, dtype=bool)
+        series = SeriesContainer.wrap(series, support_ndim=False)
+        mask = np.full((self.k, len(series)), False, dtype=bool)
+        mask_new = np.full((self.k, len(series)), False, dtype=bool)
         means = [None] * self.k
         diff = 0
         performed_it = 1
@@ -240,13 +240,15 @@ class KMeans(Medoids):
             fn = _distance_with_params
 
         # Initialisations
+        if custom_means is not None:
+            self.means = custom_means
         if self.initialize_with_kmeanspp:
-            self.means = self.kmeansplusplus_centers(self.series, use_c=use_c)
+            self.means = self.kmeansplusplus_centers(series, use_c=use_c)
         elif self.initialize_with_kmedoids:
-            self.means = self.kmedoids_centers(self.series, use_c=use_c)
+            self.means = self.kmedoids_centers(series, use_c=use_c)
         else:
-            indices = np.random.choice(range(0, len(self.series)), self.k, replace=False)
-            self.means = [self.series[random.randint(0, len(self.series) - 1)] for _ki in indices]
+            indices = np.random.choice(range(0, len(series)), self.k, replace=False)
+            self.means = [series[random.randint(0, len(series) - 1)] for _ki in indices]
 
         # Iterations
         it_nbs = range(self.max_it)
@@ -258,11 +260,11 @@ class KMeans(Medoids):
             performed_it += 1
             if use_parallel:
                 with mp.Pool() as p:
-                    clusters_distances = p.map(fn, [(self.series[idx], self.means, self.dists_options) for idx in
-                                                    range(len(self.series))])
+                    clusters_distances = p.map(fn, [(series[idx], self.means, self.dists_options) for idx in
+                                                    range(len(series))])
             else:
-                clusters_distances = list(map(fn, [(self.series[idx], self.means, self.dists_options) for idx in
-                                                   range(len(self.series))]))
+                clusters_distances = list(map(fn, [(series[idx], self.means, self.dists_options) for idx in
+                                                   range(len(series))]))
             clusters, distances = zip(*clusters_distances)
             distances = list(distances)
 
@@ -310,6 +312,8 @@ class KMeans(Medoids):
             logger.debug(f'Ignored instances: {cnt} / {len(clusters_distances)} (max_value = {max_value})')
             if (mask == mask_new).all():
                 logger.info(f"Stopped after {it_nb} iterations, no change in cluster assignment")
+                if self.show_progress and tqdm is not None:
+                    it_nbs.close()
                 break
             mask[:, :] = mask_new
             for ki in range(self.k):
@@ -326,14 +330,14 @@ class KMeans(Medoids):
             if use_parallel:
                 with mp.Pool() as p:
                     means = p.map(_dba_loop_with_params,
-                                  [(self.series, self.series[best_medoid[ki]], mask[ki, :],
+                                  [(series, series[best_medoid[ki]], mask[ki, :],
                                     self.max_dba_it, self.thr, use_c, self.nb_prob_samples) for ki in range(self.k)])
             else:
                 means = list(map(_dba_loop_with_params,
-                             [(self.series, self.series[best_medoid[ki]], mask[ki, :],
+                             [(series, series[best_medoid[ki]], mask[ki, :],
                                self.max_dba_it, self.thr, use_c, self.nb_prob_samples) for ki in range(self.k)]))
             # for ki in range(self.k):
-            #     means[ki] = dba_loop(self.series, c=None, mask=mask[:, ki], use_c=True)
+            #     means[ki] = dba_loop(series, c=None, mask=mask[:, ki], use_c=True)
             for ki in range(self.k):
                 curlen = min(len(means[ki]), len(self.means[ki]))
                 difflen += curlen
@@ -343,6 +347,8 @@ class KMeans(Medoids):
             diff /= difflen
             if diff <= self.thr:
                 print(f"Stopped early after {it_nb} iterations, no change in means")
+                if self.show_progress and tqdm is not None:
+                    it_nbs.close()
                 break
 
         # self.cluster_idx = {medoid: {inst for inst in instances}
